@@ -1,3 +1,15 @@
+/* 
+* This work has been done by Phillip Ochola Makanyengo
+* Email: its2uraps@gmail.com
+*
+* This work uses open source code and libraries and 
+* can therefore be replicated unless certain portions
+* are stated otherwise. 
+*
+* Please refer to the author when using the code.
+*
+*/
+
 //Modules
 var http = require('http'),
 net =  require('net'),
