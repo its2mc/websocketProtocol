@@ -49,6 +49,7 @@ accepted_protocols = ['chat','stream'];
 var message={
 	_buf: [],
 	continous_frame : 0,
+	masking_key : 0,
 	msg_len : 0,
 	data_type : 0 //0 for text and 1 for binary
 };
@@ -60,7 +61,7 @@ var message={
 
 //Process request and handle connection establishement
 var process_request = function(request,socket){ 
-	var protocol;
+	var protocol_header;
 	function fail(sock,e){ //function to safely fail
 		sock.write("HTTP/1.1 403 Error occured\r\n");
 		throw(e);
@@ -136,7 +137,7 @@ var msg_identifier = function(buffer){
 		payload_len_max : 0
 	};
 	//moved these outside..
-	proto.masking_key = (proto.mask == 1)?buffer.slice(2,4):0;
+	proto.masking_key = (proto.mask == 1)?buffer.slice(2,6):0;
 
 	if (proto.mask == 0) {
 		//if mask not set means that index 1 contains payload length and following indices contain payload_len/payload
@@ -148,13 +149,13 @@ var msg_identifier = function(buffer){
 		else if((buffer[1] & 127) > 126) len_var = parseInt(buffer.slice(2,10));
 	}
 	else {
-		//if masking key is set . it means masking key is in pos 2,3 of buffer and payload extension is from pos 4
+		//if masking key is set . it means masking key is in pos 2,3,4,5 of buffer and payload extension is from pos 6
 		// if less than 126 then that is the message length. this remains as before
 		if ((buffer[1] & 127) < 126)len_var = parseInt(buffer[1] & 127); 
-		// if exactly 126 then look into next 16 bits (2 bytes) in pos 4 and 5
-		else if((buffer[1] & 127) == 126) len_var = parseInt(buffer.slice(4,6));
-		// if 127 then next 64 bits needed. (8 bytes) in pos 4,5,6,7,8,9,10,11
-		else if((buffer[1] & 127) > 126) len_var = parseInt(buffer.slice(4,12));
+		// if exactly 126 then look into next 16 bits (2 bytes) in pos 6 and 7
+		else if((buffer[1] & 127) == 126) len_var = parseInt(buffer.slice(6,8));
+		// if 127 then next 64 bits needed. (8 bytes) in pos 6,7,8,9,10,11,12,13
+		else if((buffer[1] & 127) > 126) len_var = parseInt(buffer.slice(6,14));
 	}
 	proto.payload_len_max = len_var;
 
@@ -163,9 +164,18 @@ var msg_identifier = function(buffer){
 }
 
 //This function uses the mask to unmask the message before being returned
-var unmask_msg = function(mask,msg){
-	var string = mask+"\n"+msg;
-	return string
+var unmask_msg = function(mask,key,msg){
+	var j = 0,
+	new_msg = new Buffer(msg);
+	if (mask == 0) return msg; // we check if message has been masked. if not then leave
+	else{
+		//Here we implement masking algorithm and return a clean message
+		for (var i = 0;i<msg.length;i++){
+			j = i%4;
+			new_msg[i] = msg[i] ^key[j];
+		}
+		return new_msg;
+	}
 };
 
 //Process raw messages recieved
@@ -185,6 +195,10 @@ var process_message = function(identifier,payload,socket){
 			message.continous_frame = 1;
 			return "continuous_frame"; //inform user that frame is continous
 		}
+
+		//Little routine to unmask full buffer here. as long as continous frames have same masks
+		message._buf = unmask_msg(message.mask,message.masking_key,message._buf);
+
 		//Now I try to get the data type and send the message back to the user
 		if(message.data_type == 0) //default datatype is text
 			return message._buf.toString('utf8'); //send text data
@@ -198,7 +212,7 @@ var process_message = function(identifier,payload,socket){
 		message.msg_len = 0; //might decide to dynamically load the message object as new buffer
 		message.continous_frame = 0;
 		message.data_type = 0; //default is 0 i.e. text
-
+		message.masking_key = (identifier.mask==1)?identifier.masking_key:0;
 		//~ is bitwise not, since if fin is 0 then frame is 1 and opposite is true too
 		message.continous_frame = (identifier.fin==1)?0:1; //sets first frame to be processed as normal
 		
@@ -214,7 +228,7 @@ var process_message = function(identifier,payload,socket){
 				message.data_type = 1;
 			break;
 			case PING: //used to send ping
-				//trigger pong message not currently implementing
+				pong();
 			break;
 			default:
 				return "Message opcode not okay"; 
@@ -223,7 +237,7 @@ var process_message = function(identifier,payload,socket){
 
 		//This small function sets the starting position of the message payloads.. its getting hard to keep track
 		if(identifier.mask == 1){
-			n1=4;n2=6;n3=12; 
+			n1=6;n2=8;n3=14; 
 		}else{
 			n1=2;n2=4;n3=10;
 		}
@@ -232,19 +246,20 @@ var process_message = function(identifier,payload,socket){
 			//Now I try and get the message size and copy message
 			message.msg_len = identifier.payload_len_max; //max is the absolute message size, min is pos 3 to int
 			if (identifier.payload_len_min <126){ // if less than 126 then that is the message length
-				message._buf.concat(payload.slice(n1,(payload.length+1))); //copy whole message
+				//message._buf.concat(payload.slice(n1,(payload.length))); //copy whole message
+				message._buf = payload.slice(n1,payload.length);
 			}
 			else if(identifier.payload_len_min == 126){// if exactly 126 then look into next 16 bits (2 bytes)
-				message._buf.concat(payload.slice(n2,(payload.length+1))); //concatinate message to buffer
+				message._buf = payload.slice(n2,(payload.length)); //concatinate message to buffer
 				message.msg_len -=  2^((payload.length-n2)*8-1); //reduce the length of message copied
 			}
 			else if(identifier.payload_len_min > 126){// if 127 then next 64 bits needed. (8 bytes)
-				message._buf.concat(payload.slice(n3,(payload.length+1))); //concatinate message to buffer
+				message._buf = payload.slice(n3,(payload.length)); //concatinate message to buffer
 				message.msg_len -=  2^((payload.length-n3)*8-1); //reduce the length of message copied
 			}
 
 			//Little routine to unmask full buffer here. as long as continous frames have same masks
-			message._buf = unmask_msg(identifier.masking_key.toString('utf8'),message._buf.toString('utf8'));
+			message._buf = unmask_msg(message.mask,message.masking_key,message._buf);
 
 			//Now I try to get the data type and send the message back to the user 
 			if(message.data_type == 0) //default datatype is text
@@ -256,16 +271,16 @@ var process_message = function(identifier,payload,socket){
 			message.msg_len = identifier.payload_len_max;
 			if (identifier.payload_len_min <126){ // if less than 126 then that is the message length
 				message.msg_len = identifier.payload_len_max; 
-				message._buf.concat(payload.slice(n1,(payload.length+1))); //copy whole message
+				message._buf.concat(payload.slice(n1,(payload.length))); //copy whole message
 			}
 			else if(identifier.payload_len_min == 126){// if exactly 126 then look into next 16 bits (2 bytes)
 				message.msg_len = parseInt(payload.slice(2,5)); //Get intended message length from data
-				message._buf.concat(payload.slice(n2,(payload.length+1))); //concatinate message to buffer
+				message._buf.concat(payload.slice(n2,(payload.length))); //concatinate message to buffer
 				message.msg_len -=  2^((payload.length-n2)*8-1); //reduce the length of message copied
 			}
 			else if(identifier.payload_len_min > 126){// if 127 then next 64 bits needed. (8 bytes)
 				message.msg_len = parseInt(payload.slice(2,11)); //Get intended message length from data
-				message._buf.concat(payload.slice(n3,(payload.length+1))); //concatinate message to buffer
+				message._buf.concat(payload.slice(n3,(payload.length))); //concatinate message to buffer
 				message.msg_len -=  2^((payload.length-n3)*8-1); //reduce the length of message copied
 			}
 			return "continuous_frame"; //not needed but good for debugging
@@ -322,7 +337,7 @@ function testServer(){
 				socket.on('data', function(d,start,end){
 					//Get message identifier (makes it easier to handle messages)
 					var ident = msg_identifier(d.slice(0,13)); //input only first part of data slice function needs limit of n-1
-					console.log(JSON.stringify(ident));
+					//console.log(JSON.stringify(ident)); //use this to keep tabs on message details
 					console.log(process_message(ident,d,socket)); //the return value will be buffer with message
 				});
 				socket.on('close',function(e){
