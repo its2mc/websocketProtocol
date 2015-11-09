@@ -335,13 +335,18 @@ function testServer(){
 			rv = process_request(req,socket); 
 			if(rv ==1){//if request handled properly
 				socket.on('data', function(d,start,end){
-					//Get message identifier (makes it easier to handle messages)
-					var ident = msg_identifier(d.slice(0,13)); //input only first part of data slice function needs limit of n-1
-					//console.log(JSON.stringify(ident)); //use this to keep tabs on message details
-					console.log(process_message(ident,d,socket)); //the return value will be buffer with message
+					try{
+						//Get message identifier (makes it easier to handle messages)
+						var ident = msg_identifier(d.slice(0,13)); //input only first part of data slice function needs limit of n-1
+						//console.log(JSON.stringify(ident)); //use this to keep tabs on message details
+						console.log(process_message(ident,d,socket)); //the return value will be buffer with message
+					}
+					catch(e){
+						console.log("Message processing error:\n"+e);
+					}
 				});
 				socket.on('close',function(e){
-					console.log("connection closed!\n"+e.toString());
+					console.log("connection closed!\n"+e);
 				});
 			}
 			else{
@@ -349,7 +354,7 @@ function testServer(){
 			}
 		} 
 		catch (e){
-			console.log('Connection error\n'+e);
+			console.log('Connection error:\n'+e);
 		}		 
 	});
 }
