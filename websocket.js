@@ -245,14 +245,15 @@ var process_message = function(identifier,payload,socket){
 		if(message.continous_frame == 0){//if message not continous then get message and return to user
 			//Now I try and get the message size and copy message
 			message.msg_len = identifier.payload_len_max; //max is the absolute message size, min is pos 3 to int
-			if (identifier.payload_len_min <126){ // if less than 126 then message at n1
+			if (identifier.payload_len_min <126){ // if less than 126 then that is the message length
+				//message._buf.concat(payload.slice(n1,(payload.length))); //copy whole message
 				message._buf = payload.slice(n1,payload.length);
 			}
-			else if(identifier.payload_len_min == 126){// if exactly 126 then message at n2.. 
+			else if(identifier.payload_len_min == 126){// if exactly 126 then look into next 16 bits (2 bytes)
 				message._buf = payload.slice(n2,(payload.length)); //concatinate message to buffer
 				message.msg_len -=  2^((payload.length-n2)*8-1); //reduce the length of message copied
 			}
-			else if(identifier.payload_len_min > 126){// if 127 then msg at n3
+			else if(identifier.payload_len_min > 126){// if 127 then next 64 bits needed. (8 bytes)
 				message._buf = payload.slice(n3,(payload.length)); //concatinate message to buffer
 				message.msg_len -=  2^((payload.length-n3)*8-1); //reduce the length of message copied
 			}
@@ -267,26 +268,20 @@ var process_message = function(identifier,payload,socket){
 				return message._buf; //send raw data
 		}else{//if continous then append to buffer and return continous
 			//Now I try and get the message size and copy message
-			message.msg_len -= payload.length; //subtract length of continous frame from message length 
-			if (message.msg_len < 1){ //if the continous frame contains rest of message then finish 
-				message._buf.concat(payload); //copy whole message
-				message.continous_frame = 0; //then set continous frame off
+			message.msg_len = identifier.payload_len_max;
+			if (identifier.payload_len_min <126){ // if less than 126 then that is the message length
+				message.msg_len = identifier.payload_len_max; 
+				message._buf.concat(payload.slice(n1,(payload.length))); //copy whole message
 			}
-			else // if current frame not last frame i.e. remaining message size exceeds current payload size
-				message._buf.concat(payload); //concatinate whole frame
-				message.continous_frame = 1; //set it to 1 just in case
-				return "continous_frame";	
+			else if(identifier.payload_len_min == 126){// if exactly 126 then look into next 16 bits (2 bytes)
+				message._buf.concat(payload.slice(n2,(payload.length))); //concatinate message to buffer
+				message.msg_len -=  2^((payload.length-n2)*8-1); //reduce the length of message copied
 			}
-
-			//Little routine to unmask full buffer here. as long as continous frames have same masks
-			message._buf = unmask_msg(message.mask,message.masking_key,message._buf);
-
-			//Now I try to get the data type and send the message back to the user 
-			if(message.data_type == 0) //default datatype is text
-				return message._buf.toString('utf8'); //send text data
-			else
-				return message._buf; //send raw data
-			
+			else if(identifier.payload_len_min > 126){// if 127 then next 64 bits needed. (8 bytes)
+				message._buf.concat(payload.slice(n3,(payload.length))); //concatinate message to buffer
+				message.msg_len -=  2^((payload.length-n3)*8-1); //reduce the length of message copied
+			}
+			return "continuous_frame"; //not needed but good for debugging
 		}
 	}
 }
@@ -338,18 +333,13 @@ function testServer(){
 			rv = process_request(req,socket); 
 			if(rv ==1){//if request handled properly
 				socket.on('data', function(d,start,end){
-					try{
-						//Get message identifier (makes it easier to handle messages)
-						var ident = msg_identifier(d.slice(0,13)); //input only first part of data slice function needs limit of n-1
-						//console.log(JSON.stringify(ident)); //use this to keep tabs on message details
-						console.log(process_message(ident,d,socket)); //the return value will be buffer with message
-					}
-					catch(e){
-						console.log("Message processing error:\n"+e);
-					}
+					//Get message identifier (makes it easier to handle messages)
+					var ident = msg_identifier(d.slice(0,13)); //input only first part of data slice function needs limit of n-1
+					//console.log(JSON.stringify(ident)); //good for debugging purposes 
+					console.log(process_message(ident,d,socket)); //the return value will be buffer with message
 				});
 				socket.on('close',function(e){
-					console.log("connection closed!\n"+e);
+					console.log("connection closed!\n"+e.toString());
 				});
 			}
 			else{
@@ -357,7 +347,7 @@ function testServer(){
 			}
 		} 
 		catch (e){
-			console.log('Connection error:\n'+e);
+			console.log('Connection error\n'+e);
 		}		 
 	});
 }
